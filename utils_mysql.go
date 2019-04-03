@@ -4,13 +4,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
 
+type columnData struct{
+	Column string
+	ColumnKey string
+	DataType string
+	Nullable string
+}
+
 // GetColumnsFromMysqlTable Select column details from information schema and return map of map
-func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariadbHost string, mariadbPort int, mariadbDatabase string, mariadbTable string) (*map[string]map[string]string, error) {
+func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariadbHost string, mariadbPort int, mariadbDatabase string, mariadbTable string) ([]columnData, error) {
 
 	var err error
 	var db *sql.DB
@@ -28,7 +34,7 @@ func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariad
 	}
 
 	// Store colum as map of maps
-	columnDataTypes := make(map[string]map[string]string)
+	columnDataTypes := make([]columnData, 0, 64)
 	// Select columnd data from INFORMATION_SCHEMA
 	columnDataTypeQuery := "SELECT COLUMN_NAME, COLUMN_KEY, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND table_name = ?"
 
@@ -55,31 +61,30 @@ func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariad
 		var nullable string
 		rows.Scan(&column, &columnKey, &dataType, &nullable)
 
-		columnDataTypes[column] = map[string]string{"value": dataType, "nullable": nullable, "primary": columnKey}
+		data := columnData{
+			Column: column,
+			ColumnKey: columnKey,
+			DataType: dataType,
+			Nullable: nullable,
+		}
+		columnDataTypes= append(columnDataTypes, data)
 	}
 
-	return &columnDataTypes, err
+	return columnDataTypes, err
 }
 
 // Generate go struct entries for a map[string]interface{} structure
-func generateMysqlTypes(obj map[string]map[string]string, depth int, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) string {
+func generateMysqlTypes(obj []columnData, depth int, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) string {
 	structure := "struct {"
 
-	keys := make([]string, 0, len(obj))
-	for key := range obj {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		mysqlType := obj[key]
+	for _, column := range obj{
 		nullable := false
-		if mysqlType["nullable"] == "YES" {
+		if column.Nullable == "YES" {
 			nullable = true
 		}
 
 		primary := ""
-		if mysqlType["primary"] == "PRI" {
+		if column.ColumnKey == "PRI" {
 			primary = ";primary_key"
 		}
 
@@ -87,15 +92,15 @@ func generateMysqlTypes(obj map[string]map[string]string, depth int, jsonAnnotat
 		var valueType string
 		// If the guregu (https://github.com/guregu/null) CLI option is passed use its types, otherwise use go's sql.NullX
 
-		valueType = mysqlTypeToGoType(mysqlType["value"], nullable, gureguTypes)
+		valueType = mysqlTypeToGoType(column.DataType, nullable, gureguTypes)
 
-		fieldName := fmtFieldName(stringifyFirstChar(key))
+		fieldName := fmtFieldName(stringifyFirstChar(column.Column))
 		var annotations []string
 		if gormAnnotation == true {
-			annotations = append(annotations, fmt.Sprintf("gorm:\"column:%s%s\"", key, primary))
+			annotations = append(annotations, fmt.Sprintf("gorm:\"column:%s%s\"", column.Column, primary))
 		}
 		if jsonAnnotation == true {
-			annotations = append(annotations, fmt.Sprintf("json:\"%s%s\"", key, primary))
+			annotations = append(annotations, fmt.Sprintf("json:\"%s%s\"", column.Column, primary))
 		}
 		if len(annotations) > 0 {
 			structure += fmt.Sprintf("\n%s %s `%s`",
